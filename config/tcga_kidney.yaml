@@ -1,0 +1,9 @@
+orientation: "LPS"
+crop_size_mm: [140.0, 140.0, 160.0]
+target_size: [32,128,128]
+pad_value: -1000.0
+window_level: 50.0
+window_width: 500.0
+kidney_label: 1
+lesion_label: 2   
+min_kidney_voxels: 1000
