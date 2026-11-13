@@ -1,0 +1,17 @@
+# Core scientific and imaging dependencies
+numpy
+pandas
+scipy
+SimpleITK
+h5py
+opencv-python
+matplotlib
+tqdm
+
+# Model inference and configuration
+torch
+transformers
+dynamic-network-architectures>=0.4.4,<0.5
+huggingface_hub
+pydantic
+PyYAML

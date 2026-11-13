@@ -7,7 +7,7 @@ import SimpleITK as sitk
 import torch
 from torch.utils.data import Dataset
 
-from .generic import GenericTCIADataset
+from .generic import GenericRadiologyDataset
 
 import time
 from contextlib import contextmanager
@@ -17,12 +17,12 @@ from scipy.ndimage import label
 
 class FeatureExtractionDataset(Dataset):
     """
-    Common preprocessing for CT foundation-model feature extraction.
+    Modality-neutral spatial preprocessing for 3D feature extraction.
 
     Strategy
     --------
     If segmentation exists:
-        class-2 lesion -> largest axial area -> lesion centroid
+        configured segmentation label -> largest axial area -> ROI centroid
         -> fixed physical crop
 
     If segmentation does not exist:
@@ -30,7 +30,7 @@ class FeatureExtractionDataset(Dataset):
             fixed physical crop centered on the volume
 
         fallback_mode='whole_volume':
-            entire CT volume is resampled to target shape
+            entire volume is resampled to target shape
 
     Output:
         torch.Tensor of shape [1, D, H, W]
@@ -55,12 +55,15 @@ class FeatureExtractionDataset(Dataset):
             128
         ),
 
-        # Padding value for CT outside image
+        # Padding value used outside the image during cropping/resampling.
         pad_value: float = -1000.0,
 
         # HU preprocessing
         window_level: Optional[float] = 50.0,
         window_width: Optional[float] = 500.0,
+
+        # Intensity policy: CT windowing, no change, per-volume z-score or min-max.
+        intensity_mode: str = "ct_window",
 
         # Segmentation label
         lesion_label: int = 2,
@@ -83,8 +86,11 @@ class FeatureExtractionDataset(Dataset):
                 "fallback_mode must be 'center_crop' or 'whole_volume'"
             )
 
+        if intensity_mode not in {"ct_window", "none", "zscore", "minmax"}:
+            raise ValueError("intensity_mode must be 'ct_window', 'none', 'zscore', or 'minmax'")
+
         print("Initializing base dataset...")
-        self.base_dataset = GenericTCIADataset(
+        self.base_dataset = GenericRadiologyDataset(
             file_obj=file_obj,
             orientation=orientation,
             **kwargs,
@@ -98,6 +104,7 @@ class FeatureExtractionDataset(Dataset):
 
         self.window_level = window_level
         self.window_width = window_width
+        self.intensity_mode = intensity_mode
 
         self.lesion_label = lesion_label
 
@@ -134,7 +141,7 @@ class FeatureExtractionDataset(Dataset):
         seg: np.ndarray,
     ):
         """
-        Find lesion center using class-2 segmentation.
+        Find the center of the configured segmentation label.
 
         1. Find axial slice with the largest lesion area.
         2. Calculate centroid within that slice.
@@ -325,12 +332,14 @@ class FeatureExtractionDataset(Dataset):
     # HU normalization
     # ==============================================================
 
-    def _normalize_hu(
+    def _normalize_intensity(
         self,
-        ct: np.ndarray,
+        image: np.ndarray,
     ):
         """
-        Optional CT windowing.
+        Apply the selected intensity transform. CT windowing remains the
+        default for backward compatibility; MRI/PET users should select a
+        policy appropriate to their data explicitly.
 
         Example for kidney soft tissue:
         WL=50, WW=500 gives:
@@ -340,11 +349,23 @@ class FeatureExtractionDataset(Dataset):
         Mapping -> [0,1].
         """
 
+        image = image.astype(np.float32, copy=False)
+        if self.intensity_mode == "none":
+            return image
+        if self.intensity_mode == "zscore":
+            std = float(image.std())
+            return (image - float(image.mean())) / max(std, 1e-8)
+        if self.intensity_mode == "minmax":
+            lo, hi = float(image.min()), float(image.max())
+            if hi <= lo:
+                return np.zeros_like(image)
+            return (image - lo) / (hi - lo)
+
         if (
             self.window_level is None
             or self.window_width is None
         ):
-            return ct.astype(np.float32)
+            return image
 
         lower = (
             self.window_level
@@ -356,7 +377,7 @@ class FeatureExtractionDataset(Dataset):
             + self.window_width / 2.0
         )
 
-        ct = (ct - lower) / (upper - lower)
+        ct = (image - lower) / (upper - lower)
 
         ct = np.clip(
             ct,
@@ -479,7 +500,7 @@ class FeatureExtractionDataset(Dataset):
         # 3. Intensity normalization
         # ----------------------------------------------------------
 
-        processed = self._normalize_hu(
+        processed = self._normalize_intensity(
             processed
         )
 
@@ -504,6 +525,7 @@ class FeatureExtractionDataset(Dataset):
 
             "center_xyz": center,
             "center_source": center_source,
+            "intensity_mode": self.intensity_mode,
 
             "spatial_mode": spatial_mode,
 
@@ -605,7 +627,7 @@ class KidneyFeatureDataset(Dataset):
     ):
         super().__init__()
 
-        self.base_dataset = GenericTCIADataset(
+        self.base_dataset = GenericRadiologyDataset(
             file_obj=file_obj,
             orientation=orientation,
             **kwargs,

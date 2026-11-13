@@ -158,8 +158,21 @@ class VolumeSliceViewer:
 
         self._update()
 
-    def show(self):
-        """Open interactive viewer."""
+    def show(self, autoplay_interval=None, title=None):
+        """Open the slice viewer, optionally advancing automatically.
+
+        Args:
+            autoplay_interval: Seconds between slices. When provided, playback
+                starts at the first slice and closes the window after the last
+                slice has been displayed for one interval.
+            title: Optional figure title, such as a case identifier.
+        """
+
+        if autoplay_interval is not None and autoplay_interval <= 0:
+            raise ValueError("autoplay_interval must be greater than zero")
+
+        if autoplay_interval is not None:
+            self.slice_idx = 0
 
         if self.segmentation is None:
 
@@ -260,4 +273,29 @@ class VolumeSliceViewer:
         )
 
         plt.tight_layout()
-        plt.show()
+        if title:
+            self.fig.suptitle(title)
+
+        if autoplay_interval is not None:
+            timer = self.fig.canvas.new_timer(
+                interval=max(1, round(autoplay_interval * 1000))
+            )
+
+            def advance_slice():
+                if self.fig is None or not plt.fignum_exists(self.fig.number):
+                    timer.stop()
+                    return
+                if self.slice_idx >= self.n_slices - 1:
+                    timer.stop()
+                    plt.close(self.fig)
+                    return
+                self.slice_idx += 1
+                self._update()
+
+            timer.add_callback(advance_slice)
+            self._autoplay_timer = timer
+            timer.start()
+
+        plt.show(block=True)
+        if autoplay_interval is not None:
+            timer.stop()

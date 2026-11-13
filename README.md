@@ -1,29 +1,36 @@
-# CT feature extraction
+# Radiology feature extraction
 
-`CTProcessor` extracts features from CT volumes using foundation models. Run it through `feature_extraction.py`; the input worklist is a CSV with a header and one CT path per row. Create one with `create_worklist.py` or provide an existing worklist.
+`RadiologyProcessor` extracts features from radiology volumes listed in a CSV worklist. The first column contains a volume path for each row. Paths can point to a supported image file or, when DICOM series loading is enabled in the dataset, a series directory.
 
-## Supported encoders
+## Worklist with segmentations
 
-- `curia`, `curia-2`, `tap-ct-2d`: axial slice features
-- `tap-ct-3d`, `merlin`: whole-volume features
-- `renalclip` (or `renal-clip`): kidney-focused 3D features; set `--renalclip_repo_path`
+When using `--use_segmentations`, provide a second column with the matching segmentation path for every volume. The rows are paired by position. By default, every row must have a segmentation path, and the file must be readable and align with the volume. For example:
 
-Use `--organ kidney` to load paired left/right crops with `KidneyFeatureDataset`. Kidney mode expects segmentation masks with kidney label `1` and lesion label `2`; configure mask matching with `--use_segmentations` and `--segmentation_dir`. Without kidney mode, `GenericTCIADataset` loads whole volumes and can optionally return matched segmentations.
+```csv
+volume_path,segmentation_path
+/data/images/patient_001.nii.gz,/data/segmentations/patient_001.nii.gz
+/data/images/patient_002.nii.gz,/data/segmentations/patient_002.nii.gz
+```
+
+Run extraction with `--use_segmentations`; segmentation discovery or matching by dataset metadata is not performed.
+
+To allow cases without a segmentation, leave their second-column value empty or provide a path that is unavailable, then pass `--allow_missing_segmentations`. Those cases use the dataset's configured no-segmentation fallback; the default `FeatureExtractionDataset` uses `fallback_mode: center_crop` unless configured otherwise.
+
+To visually review the image-mask pairs before extraction, run:
+
+```bash
+python scripts/review_segmentation_matches.py /data/volume_worklist_with_segmentations.csv
+```
+
+The script uses `VolumeSliceViewer` to step through every axial slice at 0.5 seconds per slice by default. Use `--interval` to change the delay. If an image and mask have different physical grids, it resamples the mask onto the image grid for display.
 
 ## Run
 
 ```bash
-python scripts/feature_encoders/radiology/feature_extraction.py \
-  --img_dir /data/ct \
-  --worklist_csv /data/ct_worklist.csv \
+python feature_extraction.py \
+  --worklist_csv /data/volume_worklist.csv \
   --save_dir /data/features/radiology \
-  --fm_list tap-ct-2d tap-ct-3d
+  --fm_list merlin
 ```
 
-Pass `--dataset_config_file scripts/feature_encoders/radiology/config/tcga_kidney.yaml` to load preprocessing settings from YAML. See `feature_extraction.py --help` for all options. `--save_type` selects HDF5 (`h5`, default) or PyTorch (`pt`) output; features are organized under model-specific `axial_features_*` or `3d_features_*` directories. Optional center-slice thumbnails are saved under `thumbnails/`.
-
-For Slurm, edit paths and model options in `run_ct_fms.sh`, then submit with:
-
-```bash
-sbatch scripts/feature_encoders/radiology/run_ct_fms.sh
-```
+For segmentation-aware preprocessing, add `--use_segmentations` and use the two-column worklist shown above. Use `--dataset_config_file` for dataset settings and `--model_config_file` for model-specific settings. `--save_type` selects HDF5 (`h5`, default) or PyTorch (`pt`) output.

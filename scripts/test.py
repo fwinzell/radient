@@ -7,10 +7,10 @@ from pathlib import Path
 import sys
 import importlib.util
 
-from utils import match_segmentations
-from dataset.tcia_features import FeatureExtractionDataset, KidneyFeatureDataset, kidney_collate_fn
-from dataset.generic import GenericTCIADataset
-from dataset.viewer import VolumeSliceViewer
+from radient.utils import match_segmentations
+from radient.dataset.features import FeatureExtractionDataset, KidneyFeatureDataset, kidney_collate_fn
+from radient.dataset.generic import GenericRadiologyDataset
+from radient.dataset.viewer import VolumeSliceViewer
 
 def get_worklist(worklist, ct_source, segmentation_dir):
     worklist = pd.read_csv(worklist, header=None, skiprows=1)
@@ -130,12 +130,12 @@ def view_h5_file(path):
 
 
 if __name__ == "__main__":
-    #df = get_worklist(
-        #worklist="/data/pathology/projects/filip/cohorts/tcga/csv_files/radiology/tcga_kirc.csv",
+    df = get_worklist(
+        worklist="/data/pathology/projects/filip/cohorts/tcga/csv_files/radiology/tcga_kirc.csv",
     #    worklist="/Users/filipwinzell/Python/Radboud/cohorts/worklist.csv",
-    #    ct_source="/Volumes/oncology/experiments/sarah_kidney_abnormality_segmentation/datasets/TCGA-KIRP/",
-    #    segmentation_dir="/Volumes/oncology/experiments/sarah_kidney_abnormality_segmentation/datasets/TCGA-KIRC/onco_segmentations"
-    #)
+        ct_source="/Volumes/oncology/experiments/sarah_kidney_abnormality_segmentation/datasets/TCGA-KIRP/",
+        segmentation_dir="/Volumes/oncology/experiments/sarah_kidney_abnormality_segmentation/datasets/TCGA-KIRC/onco_segmentations"
+    )
     #test_generic(df, n=10)
     #test_feature_dataset(df)
     #test_kidney_dataset(df, n=3)
