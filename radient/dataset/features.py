@@ -11,6 +11,8 @@ from .generic import GenericRadiologyDataset
 
 import time
 from contextlib import contextmanager
+import tempfile
+from pathlib import Path
 
 from scipy.ndimage import label
 
@@ -70,6 +72,10 @@ class FeatureExtractionDataset(Dataset):
 
         # What to do without segmentation
         fallback_mode: str = "center_crop",
+        segmentation_mode: str = "external",
+        totalsegmentator_rois=None,
+        totalsegmentator_task: str = "total",
+        totalsegmentator_fast: bool = False,
 
         # Whether to return metadata
         return_metadata: bool = True,
@@ -85,6 +91,8 @@ class FeatureExtractionDataset(Dataset):
             raise ValueError(
                 "fallback_mode must be 'center_crop' or 'whole_volume'"
             )
+        if segmentation_mode not in {"none", "external", "totalsegmentator"}:
+            raise ValueError("segmentation_mode must be 'none', 'external', or 'totalsegmentator'")
 
         if intensity_mode not in {"ct_window", "none", "zscore", "minmax"}:
             raise ValueError("intensity_mode must be 'ct_window', 'none', 'zscore', or 'minmax'")
@@ -109,6 +117,10 @@ class FeatureExtractionDataset(Dataset):
         self.lesion_label = lesion_label
 
         self.fallback_mode = fallback_mode
+        self.segmentation_mode = segmentation_mode
+        self.totalsegmentator_rois = list(totalsegmentator_rois or ["kidney_left", "kidney_right"])
+        self.totalsegmentator_task = totalsegmentator_task
+        self.totalsegmentator_fast = bool(totalsegmentator_fast)
         self.return_metadata = return_metadata
         print(f"FeatureExtractionDataset initialized with {self.__len__()} instances")
 
@@ -163,6 +175,51 @@ class FeatureExtractionDataset(Dataset):
         y = int(np.round(ys.mean()))
 
         return x, y, z
+
+    def _totalsegmentator_mask(self, ct, metadata):
+        """Run TotalSegmentator for selected ROIs and return their union on the CT grid."""
+        try:
+            from totalsegmentator.python_api import totalsegmentator
+        except ImportError as exc:
+            raise ImportError(
+                "segmentation_mode='totalsegmentator' requires TotalSegmentator. "
+                "Install it with `pip install TotalSegmentator`."
+            ) from exc
+
+        image = sitk.GetImageFromArray(ct.astype(np.float32, copy=False))
+        image.SetSpacing(tuple(metadata["spacing"]))
+        image.SetOrigin(tuple(metadata["origin"]))
+        image.SetDirection(tuple(metadata["direction"]))
+        try:
+            import torch
+            device = "gpu" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
+
+        with tempfile.TemporaryDirectory(prefix="radient_totalseg_") as temp_dir:
+            temp_dir = Path(temp_dir)
+            input_path = temp_dir / "volume.nii.gz"
+            output_dir = temp_dir / "segmentations"
+            sitk.WriteImage(image, str(input_path))
+            totalsegmentator(
+                str(input_path), str(output_dir), task=self.totalsegmentator_task,
+                fast=self.totalsegmentator_fast, roi_subset=self.totalsegmentator_rois,
+                device=device,
+            )
+            union = np.zeros(ct.shape, dtype=bool)
+            for roi in self.totalsegmentator_rois:
+                roi_path = output_dir / f"{roi}.nii.gz"
+                if not roi_path.exists():
+                    raise FileNotFoundError(
+                        f"TotalSegmentator did not produce requested ROI '{roi}'"
+                    )
+                roi_image = sitk.ReadImage(str(roi_path))
+                aligned = sitk.Resample(
+                    roi_image, image, sitk.Transform(), sitk.sitkNearestNeighbor,
+                    0, sitk.sitkUInt8,
+                )
+                union |= sitk.GetArrayFromImage(aligned) > 0
+        return union.astype(np.int16) * int(self.lesion_label)
 
     # ==============================================================
     # Physical crop
@@ -433,6 +490,9 @@ class FeatureExtractionDataset(Dataset):
         seg = sample["seg"]
         base_meta = sample["metadata"]
 
+        if self.segmentation_mode == "totalsegmentator":
+            seg = self._totalsegmentator_mask(ct, base_meta)
+
         spacing = base_meta["spacing"]
 
         # ----------------------------------------------------------
@@ -442,7 +502,10 @@ class FeatureExtractionDataset(Dataset):
         
         center_source = "volume_center"
 
-        if seg is not None:
+        if self.segmentation_mode == "none":
+            center = self._volume_center(ct.shape)
+            center_source = "volume_center"
+        elif seg is not None:
 
             center = self._lesion_center(
                 seg

@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12-dev \
         python3.12-venv \
         build-essential \
+        openssh-server \
         libglib2.0-0 \
         libgl1 \
     && rm -rf /var/lib/apt/lists/*

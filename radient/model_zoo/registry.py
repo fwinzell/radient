@@ -10,7 +10,8 @@ _LOADERS = {
     "renalclip": ("renalclip", "load_renalclip"),
     "renal-clip": ("renalclip", "load_renalclip"),
     "merlin": ("merlin", "load_merlin"),
-    "nnfoundation-cnn": ("nnfoundation", "load_nnfoundation"),
+    "nnfoundation-cnn": ("nnfoundation", "load_nnfoundation_cnn"),
+    "nnfoundation-vit": ("nnfoundation", "load_nnfoundation_vit"),
     "nnfoundation": ("nnfoundation", "load_nnfoundation"),
 }
 

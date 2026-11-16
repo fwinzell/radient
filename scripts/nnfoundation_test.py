@@ -1,10 +1,11 @@
 import torch
 import json
 import torch.nn as nn
+from einops import rearrange
 
 from huggingface_hub import hf_hub_download ,snapshot_download
 
-from nnssl.architectures.get_network_from_plan import get_network_from_plans
+#from nnssl.architectures.get_network_from_plan import get_network_from_plans
 
 from dynamic_network_architectures.architectures.primus import PrimusS, PrimusB, PrimusM, PrimusL, Primus
 from dynamic_network_architectures.architectures.unet import ResidualEncoderUNet
@@ -50,51 +51,47 @@ def load_cnn_encoder(checkpoint: str | None, device: torch.device) -> nn.Module:
 
 
 
+INPUT_SHAPE = (192, 192, 192)
+PATCH_EMBED_SIZE = (8, 8, 8)
 
-"""
-path = snapshot_download(
-    "MIC-DKFZ/nnFoundationViT", 
-    allow_patterns=["*.pth", "*.json"])
+def load_vit_encoder(checkpoint: str | None, device: torch.device) -> tuple[nn.Module, nn.Module]:
+    """EvaMAE as in nnssl.architectures.architecture_registry.get_eva_mae, with nnFoundationViT weights."""
+    model = Primus(
+                input_channels=1,
+                embed_dim=1056,
+                num_classes=1,
+                eva_depth=40,
+                eva_numheads=16,
+                input_shape=INPUT_SHAPE,
+                patch_embed_size=PATCH_EMBED_SIZE,
+                init_values=0.1,
+                scale_attn_inner=True,
+            )
+    if checkpoint is None:
+        from huggingface_hub import hf_hub_download
+
+        checkpoint = hf_hub_download("MIC-DKFZ/nnFoundationViT", "checkpoint_final.pth")
+    state_dict = torch.load(checkpoint, map_location="cpu", weights_only=False)["network_weights"]
+    
+    model.load_state_dict(state_dict, strict=False)
+    eva = model.eva
+    down_projection = model.down_projection
+    return eva.to(device).eval(), down_projection.to(device).eval()
 
 
-ckpt = torch.load(f"{path}/checkpoint_final.pth", map_location="cpu", weights_only=True)
-
-plan = json.load(open(f"{path}/adaptation_plan.json", "r"))
-
-print(plan)
-arch_kwargs = dict(plan["architecture_plans"]["arch_kwargs"])
-arch_kwargs['decoder_eva_depth'] = 0
-
-from nnssl.architectures.evaMAE_module import EvaMAE
-
-
-model = EvaMAE(**arch_kwargs, 
-               do_up_projection=False)
-
-arch_kwargs.pop("input_channels", None)
-arch_kwargs.pop("output_channels", None)
-
-network = get_network_from_plans(
-    arch_class_name=plan["architecture_plans"]["arch_class_name"],
-    arch_kwargs=arch_kwargs,
-    arch_kwargs_req_import=[], #plan["architecture_plans"]["arch_kwargs_requiring_import"],
-    input_channels=1,  # Should be different
-    output_channels=2,
-    allow_init=False,  # Always false
-    deep_supervision=False,
-)
-print(network)
-
-model.load_state_dict(ckpt['network_weights'], strict=False)
-model.eval()
-"""
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model = load_cnn_encoder(checkpoint=None, device=device)
+eva, down_projection = load_vit_encoder(checkpoint=None, device=torch.device(device))
+unet = load_cnn_encoder(checkpoint=None, device=torch.device(device))
 
-
-input = torch.rand(1, 1, 192, 192, 192)
+input = torch.rand(1, 1, 192, 192, 192).to(device)
 with torch.no_grad():
-    output = model(input)
+
+    x = down_projection(input)
+    x = rearrange(x, "b c w h d -> b (w h d) c")
+    output = eva(x)
+    
+    #output = unet(input)
+
 
 print("Input shape:", input.shape)
 print("Output shape:", output[0].shape)

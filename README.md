@@ -4,7 +4,13 @@
 
 ## Worklist with segmentations
 
-When using `--use_segmentations`, provide a second column with the matching segmentation path for every volume. The rows are paired by position. By default, every row must have a segmentation path, and the file must be readable and align with the volume. For example:
+Choose a segmentation mode with `--segmentation_mode`:
+
+- `none` (default): no masks; each full volume is resampled to the model input size.
+- `external`: use masks supplied in the worklist's second column.
+- `totalsegmentator`: compute masks with the optional [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) package and crop around the selected ROIs.
+
+When using `external` (or the backwards-compatible `--use_segmentations` flag), provide a second column with the matching segmentation path for every volume. The rows are paired by position. By default, every row must have a segmentation path, and the file must be readable and align with the volume. For example:
 
 ```csv
 volume_path,segmentation_path
@@ -12,9 +18,9 @@ volume_path,segmentation_path
 /data/images/patient_002.nii.gz,/data/segmentations/patient_002.nii.gz
 ```
 
-Run extraction with `--use_segmentations`; segmentation discovery or matching by dataset metadata is not performed.
+Run extraction with `--segmentation_mode external` (or `--use_segmentations`); segmentation discovery or matching by dataset metadata is not performed.
 
-To allow cases without a segmentation, leave their second-column value empty or provide a path that is unavailable, then pass `--allow_missing_segmentations`. Those cases use the dataset's configured no-segmentation fallback; the default `FeatureExtractionDataset` uses `fallback_mode: center_crop` unless configured otherwise.
+To allow cases without a segmentation, leave their second-column value empty or provide a path that is unavailable, then pass `--allow_missing_segmentations`. Those cases use the dataset's configured no-segmentation fallback (`fallback_mode: center_crop` by default).
 
 To visually review the image-mask pairs before extraction, run:
 
@@ -33,4 +39,6 @@ python feature_extraction.py \
   --fm_list merlin
 ```
 
-For segmentation-aware preprocessing, add `--use_segmentations` and use the two-column worklist shown above. Use `--dataset_config_file` for dataset settings and `--model_config_file` for model-specific settings. `--save_type` selects HDF5 (`h5`, default) or PyTorch (`pt`) output.
+To compute kidney ROIs automatically, install TotalSegmentator and run with `--segmentation_mode totalsegmentator`. The default ROIs are `kidney_left` and `kidney_right`; choose others with `--totalsegmentator_rois ROI_NAME ...`, and optionally set `--totalsegmentator_task` or `--totalsegmentator_fast`.
+
+Use `--dataset_config_file` for dataset settings and `--model_config_file` for model-specific settings. `--save_type` selects HDF5 (`h5`, default) or PyTorch (`pt`) output.

@@ -23,6 +23,8 @@ class DatasetConfig(BaseModel):
     target_size: tuple[int, int, int] = (32,128,128)
     
     pad_value: float = -1000.0
+    fallback_mode: str = "center_crop"
+    intensity_mode: str = "ct_window"
     
     # HU normalization
     window_level: Optional[float] = 50.0
@@ -54,8 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--worklist_csv', type=str, help="CSV with one image path per row; with --use_segmentations, column 1 is the image path and column 2 is its matching segmentation path.",
                         default="/data/pathology/projects/filip/TCGA-data/radiology_features/csv_files/ct_worklist.csv")
     parser.add_argument('--use_segmentations', action='store_true', help="Use segmentation-aware preprocessing. The worklist must have volume paths in column 1 and matching segmentation paths in column 2.")
-    parser.add_argument('--allow_missing_segmentations', dest='require_segmentations', action='store_false', default=True, help="Allow blank or unavailable segmentation paths; affected cases use the dataset's no-segmentation fallback.")
-    parser.add_argument('--fm_list', type=str, nargs='+', default=['merlin'], help="List of names of foundation models, Currently supports curia, tap-ct-2d, tap-ct-3d, merlin and renalclip.")
+    parser.add_argument('--segmentation_mode', choices=['none', 'external', 'totalsegmentator'], default=None, help="Segmentation source: none uses each whole volume, external reads worklist column 2, and totalsegmentator computes masks.")
+    parser.add_argument('--totalsegmentator_rois', nargs='+', default=None, help="TotalSegmentator ROI names to combine, for example kidney kidney_cyst.")
+    parser.add_argument('--totalsegmentator_task', default='total', help="TotalSegmentator task (default: total).")
+    parser.add_argument('--totalsegmentator_fast', action='store_true', help="Use TotalSegmentator's faster, lower-resolution mode.")
+    parser.add_argument('--allow_missing_segmentations', dest='allow_missing_segmentations', action='store_true', default=False, help="Allow blank or unavailable segmentation paths; affected cases use the dataset's no-segmentation fallback.")
+    parser.add_argument('--fm_list', type=str, nargs='+', default=['merlin'], 
+                        help="List of names of foundation models, Currently supports curia, tap-ct-2d, tap-ct-3d, merlin and renalclip.")
     parser.add_argument('--save_type', type=str, default="h5", help="Which file type to save the features in")
     parser.add_argument('--hf_token_path', type=str, default=None, help="Path to HuggingFace token for authentication. If not provided, will look for HF_TOKEN environment variable.")
     parser.add_argument('--model_config_file', type=str, default=None, help="YAML file with model-specific options keyed by foundation model name.")
@@ -105,7 +112,11 @@ def main(config):
         fms=config.fm_list,
         image_extension=".mha",
         use_segmentations=config.use_segmentations,
-        require_segmentations=config.require_segmentations,
+        segmentation_mode=config.segmentation_mode,
+        totalsegmentator_rois=config.totalsegmentator_rois,
+        totalsegmentator_task=config.totalsegmentator_task,
+        totalsegmentator_fast=config.totalsegmentator_fast,
+        allow_missing_segmentations=config.allow_missing_segmentations,
         dataset_config=dataset_config,
         model_configs=load_model_configs(config.model_config_file),
         save_thumbnails=True,

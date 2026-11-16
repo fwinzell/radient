@@ -13,7 +13,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from torch.utils.data import DataLoader
 
-from utils import save_h5
+from radient.utils import save_h5
 from radient.dataset.generic import GenericRadiologyDataset
 from radient.dataset.features import FeatureExtractionDataset
 from radient.model_zoo import load_foundation_model
@@ -30,6 +30,10 @@ class RadiologyProcessor:
         nested_search: bool = True,
         use_segmentations: bool = False,
         allow_missing_segmentations: bool = False,
+        segmentation_mode: Optional[str] = None,
+        totalsegmentator_rois: Optional[List[str]] = None,
+        totalsegmentator_task: str = "total",
+        totalsegmentator_fast: bool = False,
         model_configs: Optional[dict] = None,
         num_workers: int = 0,
         save_thumbnails: bool = True,
@@ -120,7 +124,14 @@ class RadiologyProcessor:
         if not fms:
             raise ValueError("fms must contain at least one foundation model")
 
-        if use_segmentations and not isinstance(worklist, pd.DataFrame):
+        if segmentation_mode is None:
+            segmentation_mode = "external" if use_segmentations else "none"
+        if segmentation_mode not in {"none", "external", "totalsegmentator"}:
+            raise ValueError("segmentation_mode must be 'none', 'external', or 'totalsegmentator'")
+        if use_segmentations and segmentation_mode != "external":
+            raise ValueError("--use_segmentations can only be combined with segmentation_mode='external'")
+
+        if segmentation_mode == "external" and not isinstance(worklist, pd.DataFrame):
             if Path(worklist).suffix.lower() != ".csv":
                 raise ValueError(
                     "use_segmentations=True requires a .csv worklist with volume "
@@ -147,7 +158,8 @@ class RadiologyProcessor:
         assert self.image_extension.startswith('.'), f'Invalid extension: {self.image_extension} (must start with a period)'
 
         self.file_obj = self.worklist
-        self.use_segmentations = bool(use_segmentations)
+        self.segmentation_mode = segmentation_mode
+        self.use_segmentations = segmentation_mode == "external"
         self.allow_missing_segmentations = bool(allow_missing_segmentations)
 
         if self.use_segmentations:
@@ -170,20 +182,23 @@ class RadiologyProcessor:
         if dataset_class is not None:
             self.dataset = dataset_class(file_obj=self.file_obj, **dataset_config)
             selected_collate_fn = collate_fn
-        elif self.use_segmentations:
+        else:
             # The generic loader already supports missing or unreadable masks;
             # set this explicitly so allow_missing_segmentations controls both blank
             # paths and paths that do not exist (or cannot be aligned).
-            dataset_config["allow_missing_segmentations"] = self.allow_missing_segmentations
+            if segmentation_mode == "external":
+                dataset_config["allow_missing_segmentations"] = self.allow_missing_segmentations
+            else:
+                dataset_config["segmentation_column"] = None
+            dataset_config["segmentation_mode"] = segmentation_mode
+            if segmentation_mode == "totalsegmentator":
+                dataset_config["totalsegmentator_rois"] = totalsegmentator_rois or ["kidney_left", "kidney_right"]
+                dataset_config["totalsegmentator_task"] = totalsegmentator_task
+                dataset_config["totalsegmentator_fast"] = totalsegmentator_fast
+            if segmentation_mode == "none":
+                dataset_config.setdefault("fallback_mode", "whole_volume")
             self.dataset = FeatureExtractionDataset(file_obj=self.file_obj, **dataset_config)
             selected_collate_fn = self._feature_collate
-        else:
-            dataset_config.setdefault("segmentation_column", None)
-            self.dataset = GenericRadiologyDataset(
-                file_obj=self.file_obj, 
-                **dataset_config
-            )
-            selected_collate_fn = self._generic_collate
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=batch_size,

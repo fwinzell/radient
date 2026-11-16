@@ -12,7 +12,8 @@ model by implementing a loader module, then registering its public name in
 `_LOADERS` in `registry.py`.
 
 Supported names currently include `curia`, `curia-2`, `tap-ct-2d`,
-`tap-ct-3d`, `renalclip`/`renal-clip`, `merlin`, and `nnfoundation-cnn`.
+`tap-ct-3d`, `renalclip`/`renal-clip`, `merlin`, `nnfoundation-cnn`, and
+`nnfoundation-vit`.
 
 Model-specific options are grouped in the processor's `model_configs`
 dictionary. For example:
@@ -35,10 +36,18 @@ The `from_pretrained`, `processor_from_pretrained`, and `init_kwargs` keys are
 adapter conventions; each model adapter documents and interprets its own
 options.
 
-nnFoundationCNN constructs its ResEncL architecture and then loads the
-checkpoint state dictionary. It accepts `checkpoint_path` for a local
-`checkpoint_final.pth`, or downloads that file from Hugging Face by default.
-The model expects one-channel 3D volumes and applies per-volume z-score
-normalization by default. It does not resample the input. Loading requires
-`dynamic-network-architectures>=0.4.4,<0.5` and `huggingface_hub` for automatic
-download.
+nnFoundation has two loaders in `nnfoundation.py`:
+`load_nnfoundation_cnn()` and `load_nnfoundation_vit()`. They download the
+official checkpoints from Hugging Face and return `(model, preprocessor,
+"3d")`, matching the model-zoo loader interface. Use the registry names
+`nnfoundation-cnn` and `nnfoundation-vit`; the optional model config key
+`modality` selects the `ct` or `mri` preprocessor (defaults to `mri`). The CNN
+returns its final ResEnc encoder feature map. The ViT returns the PrimusX EVA
+patch-token embeddings, bypassing the segmentation up-projection/decoder. Both
+preprocessors follow the released training intensity scheme: crop the
+all-zero exterior, z-score each case, then center-crop or zero-pad to
+192×192×192 for deterministic feature extraction. They do not resample voxel
+spacing. CT and MRI use the same z-score scheme. Set
+`HF_HOME` or `HF_HUB_CACHE` before Python starts to place downloads in a
+different cache directory. Loading requires
+`dynamic-network-architectures>=0.4.4,<0.5` and `huggingface_hub`.
