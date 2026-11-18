@@ -21,12 +21,16 @@ def _save_attributes(h5_object, attributes):
         return
 
     for key, value in attributes.items():
+        if isinstance(value, np.str_):
+            value = str(value)
         if isinstance(value, dict):
-            value = json.dumps(value)
+            value = json.dumps(value, default=_json_default)
         elif value is None:
             value = "None"
         elif isinstance(value, tuple):
             value = np.asarray(value)
+        if isinstance(value, np.ndarray) and value.dtype.kind == "U":
+            value = value.astype(h5py.string_dtype(encoding="utf-8"))
 
         try:
             h5_object.attrs[key] = value
@@ -34,6 +38,45 @@ def _save_attributes(h5_object, attributes):
             raise RuntimeError(
                 f"Failed to save HDF5 attribute '{key}'={value!r}"
             ) from e
+
+
+def _json_default(value):
+    """Convert NumPy scalar values to JSON-compatible Python values."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _create_dataset(h5_group, key, value):
+    """Create a dataset while converting NumPy Unicode strings for h5py."""
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+    elif not isinstance(value, np.ndarray):
+        value = np.asarray(value)
+
+    if value.dtype.kind == "U":
+        if value.ndim == 0:
+            value = str(value.item())
+            return h5_group.create_dataset(
+                key, data=value, dtype=h5py.string_dtype(encoding="utf-8")
+            )
+        value = value.astype(object)
+        return h5_group.create_dataset(
+            key, data=value, dtype=h5py.string_dtype(encoding="utf-8")
+        )
+    if value.dtype.kind == "O":
+        flat = value.reshape(-1)
+        if all(isinstance(item, (str, bytes, np.str_, np.bytes_)) for item in flat):
+            value = np.asarray(
+                [item.decode("utf-8") if isinstance(item, (bytes, np.bytes_)) else str(item) for item in flat],
+                dtype=object,
+            ).reshape(value.shape)
+            return h5_group.create_dataset(
+                key, data=value, dtype=h5py.string_dtype(encoding="utf-8")
+            )
+    return h5_group.create_dataset(key, data=value)
 
 
 def save_h5(
@@ -127,15 +170,10 @@ def save_h5(
                     if feature is None:
                         continue
 
-                    if isinstance(feature, torch.Tensor):
-                        feature = feature.detach().cpu().numpy()
-                    elif not isinstance(feature, np.ndarray):
-                        feature = np.asarray(feature)
-
                     if fkey in group:
                         del group[fkey]
 
-                    dset = group.create_dataset(fkey, data=feature)
+                    dset = _create_dataset(group, fkey, feature)
 
                     # Explicitly save feature-specific attributes
                     feature_attributes = group_attributes.get(fkey, {})
@@ -146,15 +184,10 @@ def save_h5(
             # --------------------------------------------------------
             # Normal, non-nested asset
             # --------------------------------------------------------
-            if isinstance(value, torch.Tensor):
-                value = value.detach().cpu().numpy()
-            elif not isinstance(value, np.ndarray):
-                value = np.asarray(value)
-
             if key in f:
                 del f[key]
 
-            dset = f.create_dataset(key, data=value)
+            dset = _create_dataset(f, key, value)
 
             if attributes is not None:
                 _save_attributes(dset, attributes.get(key))

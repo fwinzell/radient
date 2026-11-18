@@ -15,3 +15,10 @@ dynamic-network-architectures>=0.4.4,<0.5
 huggingface_hub
 pydantic
 PyYAML
+tensorboard
+
+# Foundation models
+merlin-vlm
+
+#Segmentation models
+TotalSegmentator

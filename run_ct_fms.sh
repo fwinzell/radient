@@ -70,14 +70,14 @@ if [ -d "$PERSISTENT_CACHE_DIR/torch" ] && [ "$(ls -A $PERSISTENT_CACHE_DIR/torc
     cp -r "$PERSISTENT_CACHE_DIR/torch"/* "$TORCH_HOME/" 2>/dev/null || true
 fi
 
-# Currently supports: curia, tap-ct-2d, tap-ct-3d, merlin and renalclip
+# Currently supports: curia, tap-ct-2d, tap-ct-3d, merlin, nnfoundation-cnn, nnfoundation-vit and renalclip
 python3 "$SCRIPT_PATH" \
     --img_dir "$IMG_DIR" \
     --use_segmentations \
     --segmentation_dir "$SEGMENTATIONS" \
     --save_dir "$SAVE_DIR" \
     --worklist_csv "$WORKLIST_PATH" \
-    --fm_list curia tap-ct-3d renalclip merlin \
+    --fm_list nnfoundation-vit \
     --save_type h5 \
     --hf_token_path "$PROJECT_ROOT/hf_token.txt" \
     --renalclip_repo_path "$PROJECT_ROOT/RenalCLIP/" \

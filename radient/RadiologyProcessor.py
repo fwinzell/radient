@@ -6,10 +6,9 @@ import SimpleITK as sitk
 import numpy as np
 from pathlib import Path
 import cv2
+import yaml
 
 from typing import List, Any, Optional, Union, Callable, Type
-
-from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from torch.utils.data import DataLoader
 
@@ -151,7 +150,18 @@ class RadiologyProcessor:
         self.max_workers = max_workers
         #self.dataloader = DataLoader(self.dataset, batch_size=1, shuffle=False, num_workers=0)
         self.fms = fms
-        self.model_configs = model_configs or {}
+        default_model_config_path = Path(__file__).resolve().parents[1] / "config" / "model_configs.yaml"
+        self.model_configs = {}
+        if default_model_config_path.exists():
+            with default_model_config_path.open("r", encoding="utf-8") as config_file:
+                self.model_configs = yaml.safe_load(config_file) or {}
+        for name, settings in (model_configs or {}).items():
+            model_settings = self.model_configs.setdefault(name, {})
+            for key, value in settings.items():
+                if isinstance(value, dict) and isinstance(model_settings.get(key), dict):
+                    model_settings[key].update(value)
+                else:
+                    model_settings[key] = value
         self.save_thumbnails = save_thumbnails
 
         # Validate extension
@@ -245,198 +255,221 @@ class RadiologyProcessor:
         cv2.imwrite(os.path.join(save_path, f"{img_id}.png"), middle)
         
 
-    def run_axial_feature_extraction_default(self,
-                                     model,
-                                     fmname,
-                                     processor,
-                                     device: torch.device,
-                                     saveas: str = "h5"
-                                     ):
-        """
-        Extract features from axial 2D slices. Dataset samples may have shape
-        [D, H, W] or [C, D, H, W] (with batch dimensions added by the loader).
-        If ``processor`` is None, each slice is passed directly as
-        ``pixel_values`` with shape [1, C, H, W].
-        The extracted features are saved to disk in either HDF5 or PyTorch format.
-        """
-        
+    @staticmethod
+    def _model_features(output):
+        """Get the feature tensor from common Transformers output types."""
+        if isinstance(output, torch.Tensor):
+            return output
+        if isinstance(output, dict):
+            for key in ("pooler_output", "last_hidden_state"):
+                if output.get(key) is not None:
+                    return output[key]
+        for key in ("pooler_output", "last_hidden_state"):
+            value = getattr(output, key, None)
+            if value is not None:
+                return value
+        raise ValueError("Model output did not contain a feature tensor")
+
+    @staticmethod
+    def _volume_input(volume):
+        """Convert [D,H,W] or [C,D,H,W] samples to [1,C,D,H,W]."""
+        if volume.ndim == 3:
+            volume = volume.unsqueeze(0).unsqueeze(0)
+        elif volume.ndim == 4:
+            volume = volume.unsqueeze(0)
+        if volume.ndim != 5:
+            raise ValueError(
+                f"Expected a [D,H,W] or [C,D,H,W] sample, got {tuple(volume.shape)}"
+            )
+        return volume
+
+    def _extract_axial_features(self, volume, model, processor, device):
+        """Apply the processor and model to each axial slice in a volume."""
+        volume = volume if volume.ndim == 4 else volume.unsqueeze(0)
+        slice_features = []
+        for image_slice in volume.permute(1, 0, 2, 3):
+            model_input = (
+                {"pixel_values": image_slice.unsqueeze(0).to(device)}
+                if processor is None
+                else processor(image_slice.squeeze()).to(device)
+            )
+            slice_features.append(self._model_features(model(**model_input)))
+        return torch.cat(slice_features, dim=0)
+
+    def _extract_volume_features(self, volume, model, processor, device, model_input_strategy):
+        """Preprocess a full volume and run the configured model input layout."""
+        model_input = self._volume_input(volume)
+        if processor is not None:
+            model_input = processor(model_input)["pixel_values"]
+
+        if model_input_strategy == "slice_batch":
+            # A 2D encoder can preprocess the full volume but still expects
+            # [B*D,C,H,W] at forward time. The processor may pad D, so axial
+            # saving later trims features back to the source depth.
+            if model_input.ndim == 5:
+                batch, channels, depth, height, width = model_input.shape
+                model_input = model_input.permute(0, 2, 1, 3, 4).reshape(
+                    batch * depth, channels, height, width
+                )
+            elif model_input.ndim != 4:
+                raise ValueError(
+                    "Slice batch input must be [B,C,D,H,W] or [N,C,H,W], "
+                    f"got {tuple(model_input.shape)}"
+                )
+        elif model_input_strategy == "volume":
+            if model_input.ndim == 4:
+                model_input = model_input.unsqueeze(0)
+            if model_input.ndim != 5:
+                raise ValueError(
+                    f"Volume input must be [B,C,D,H,W], got {tuple(model_input.shape)}"
+                )
+        else:
+            raise ValueError(
+                "model_input_strategy must be 'volume' or 'slice_batch', "
+                f"got {model_input_strategy!r}"
+            )
+        return self._model_features(model(model_input.to(device)))
+
+    @staticmethod
+    def _axial_layout(features, depth):
+        """Drop a singleton batch axis and verify one feature row per slice."""
+        if features.ndim >= 3 and features.shape[0] == 1:
+            features = features.squeeze(0)
+        if features.ndim < 2 or features.shape[0] < depth:
+            raise ValueError(
+                "Axial saving requires one feature vector per input slice; "
+                f"got feature shape {tuple(features.shape)} for depth {depth}."
+            )
+        return features[:depth]
+
+    def _write_features(self, features, save_path, saveas, metadata, pid, sid, fmname, feature_dir):
+        """Write feature tensors and metadata to HDF5 or PyTorch."""
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        if saveas == "h5":
+            save_h5(
+                save_path=save_path,
+                assets={"features": features.detach().cpu().numpy(), "metadata": metadata},
+                attributes={
+                    "features": {
+                        "pid": pid,
+                        "series": sid,
+                        "savetodir": feature_dir,
+                        "encoder": fmname,
+                    }
+                },
+                mode="w",
+            )
+        elif saveas == "pt":
+            torch.save(features.detach().cpu(), save_path)
+        else:
+            raise ValueError(f"Invalid save format {saveas!r}; expected 'h5' or 'pt'.")
+
+    def _save_axial_features(self, features, depth, save_path, saveas, metadata, pid, sid, fmname, feature_dir):
+        features = self._axial_layout(features, depth)
+        self._write_features(features, save_path, saveas, metadata, pid, sid, fmname, feature_dir)
+
+    def _save_volume_features(self, features, depth, save_path, saveas, metadata, pid, sid, fmname, feature_dir):
+        self._write_features(features, save_path, saveas, metadata, pid, sid, fmname, feature_dir)
+
+    def _run_extraction(
+        self,
+        model,
+        fmname,
+        processor,
+        device,
+        saveas,
+        extraction_strategy,
+        save_strategy,
+        model_input_strategy="volume",
+    ):
+        if extraction_strategy not in {"axial", "volume"}:
+            raise ValueError("extraction_strategy must be 'axial' or 'volume'")
+        if save_strategy not in {"axial", "volume"}:
+            raise ValueError("save_strategy must be 'axial' or 'volume'")
+        if extraction_strategy == "axial" and save_strategy == "volume":
+            raise ValueError("Axial extraction cannot produce volume-level features")
+
+        feature_dir = os.path.join(
+            self.save_dir,
+            f"{'axial' if save_strategy == 'axial' else '3d'}_features_{fmname}",
+        )
+        os.makedirs(feature_dir, exist_ok=True)
+        broken_volumes = []
+
         with torch.no_grad():
             loop = tqdm(self.dataloader)
-            feature_dir = os.path.join(self.save_dir, f"axial_features_{fmname}")
-            os.makedirs(feature_dir, exist_ok=True)
-            broken_volumes = []
-
             for batch in loop:
-                images = batch["image"]
-
-                for i, volume in enumerate(images):
-                    featureBlock = []
-                    pid = batch['pid'][i]
-                    sid = batch['sid'][i]
-                    barcode = batch['barcode'][i]
-                    if "metadata" in batch:
-                        metadata = batch['metadata'][i]
-                    if volume.ndim not in (3, 4) or any(s == 0 for s in volume.shape[-3:]):
-                        loop.set_postfix_str(f'Warning: Volume has shape {volume.shape} for {pid} series {sid}. Skipping...')
+                for i, volume in enumerate(batch["image"]):
+                    pid = batch["pid"][i]
+                    sid = batch["sid"][i]
+                    barcode = batch["barcode"][i]
+                    metadata = batch.get("metadata", [None] * len(batch["image"]))[i]
+                    if volume.ndim not in (3, 4) or any(size == 0 for size in volume.shape[-3:]):
+                        loop.set_postfix_str(
+                            f"Skipping invalid volume {tuple(volume.shape)} for {pid} series {sid}"
+                        )
                         broken_volumes.append((pid, sid))
                         continue
-                    # A generic sample is [D,H,W]; custom datasets may add C.
-                    has_channel_dim = volume.ndim == 4
-                    slices = volume.shape[1] if has_channel_dim else volume.shape[0]
 
-                    save_path = os.path.join(feature_dir, pid, f"{barcode}.{saveas}")
+                    save_path = os.path.join(feature_dir, str(pid), f"{barcode}.{saveas}")
                     if os.path.exists(save_path):
-                        loop.set_postfix_str(f'Features already extracted for {pid} series {sid}: {barcode}. Skipping...')
+                        loop.set_postfix_str(f"Features already extracted for {pid} series {sid}: {barcode}")
                         continue
-                    for s in range(slices):
-                        if has_channel_dim:
-                            image_slice = volume[:, s, :, :]
-                        else:
-                            image_slice = volume[s, :, :].unsqueeze(0)
 
-                        if processor is None:
-                            model_input = {"pixel_values": image_slice.unsqueeze(0).to(device)}
-                        else:
-                            model_input = processor(image_slice.squeeze()).to(device)
-
-                        features = model(**model_input)
-                        pooled = (
-                            features.get("pooler_output")
-                            if isinstance(features, dict)
-                            else getattr(features, "pooler_output", None)
+                    depth = volume.shape[-3]
+                    if extraction_strategy == "axial":
+                        features = self._extract_axial_features(volume, model, processor, device)
+                    else:
+                        features = self._extract_volume_features(
+                            volume, model, processor, device, model_input_strategy
                         )
-                        if pooled is None:
-                            raise ValueError(
-                                f"Model {fmname!r} did not return pooler_output for an axial slice"
-                            )
-                        featureBlock.append(pooled)
 
                     if self.save_thumbnails:
                         self.capture_slice(volume, f"{pid}_{barcode}")
-                    
-                    # Concatenate features
-                    featureBlock = torch.cat(featureBlock)
 
-                    # Save the features to disk 
-                    if saveas == 'h5':
-                        save_h5(save_path=save_path,
-                                assets = {
-                                    'features' : featureBlock.detach().cpu().numpy(),
-                                    'metadata': metadata
-                                },
-                                attributes = {
-                                    'features': {'pid': pid, 'series': sid, 'savetodir': feature_dir, 'encoder': fmname},
-                                },
-                                mode='w')
-                        loop.set_postfix_str(f'Features saved in h5 for {pid} series {sid}: {barcode}.')
-                    elif saveas == 'pt':
-                        torch.save(featureBlock, save_path)
-                        loop.set_postfix_str(f'Features saved in pt for {pid} series {sid}: {barcode}.')
-                    else:
-                        raise ValueError(f'Invalid save_features_as: {saveas}. Only "h5" and "pt" are supported.')
+                    saver = self._save_axial_features if save_strategy == "axial" else self._save_volume_features
+                    saver(features, depth, save_path, saveas, metadata, pid, sid, fmname, feature_dir)
+                    loop.set_postfix_str(f"Features saved for {pid} series {sid}: {barcode}.")
 
-            if len(broken_volumes) > 0:
-                print(f"Warning: {len(broken_volumes)} volumes were skipped due to invalid shapes. See below for details:")
-                for pid, sid in broken_volumes:
-                    print(f" - Patient ID: {pid}, Series ID: {sid}")
+        if broken_volumes:
+            print(f"Warning: skipped {len(broken_volumes)} volumes with invalid shapes:")
+            for pid, sid in broken_volumes:
+                print(f" - Patient ID: {pid}, Series ID: {sid}")
 
-    def run_3d_feature_extraction_default(
-            self,
-            model,
-            fmname,
-            processor,
-            device: torch.device,
-            saveas: str = "h5"
-    ):
-        """
-        Extract features from 3D volumes. The input volume is expected to have shape [B, D, H, W],
-        where B is the batch size, D is the depth (number of slices), and H and W are the height and width of each slice. 
-        The extracted features are saved to disk in either HDF5 or PyTorch format.
-        """
+    def run_axial_feature_extraction_default(self, model, fmname, processor, device, saveas="h5", save_strategy="axial"):
+        self._run_extraction(model, fmname, processor, device, saveas, "axial", save_strategy)
 
-        with torch.no_grad():
-            loop = tqdm(self.dataloader)
-            feature_dir = os.path.join(self.save_dir, f"3d_features_{fmname}")
-            os.makedirs(feature_dir, exist_ok=True)
-            broken_volumes = []
-
-            for batch in loop:
-                images = batch["image"]
-
-                for i, volume in enumerate(images):
-                    featureBlock = []
-                    pid = batch['pid'][i]
-                    sid = batch['sid'][i]
-                    barcode = batch['barcode'][i]
-                    if "metadata" in batch:
-                        metadata = batch['metadata'][i]
-                    if volume.ndim < 4 or any(s == 0 for s in volume.shape[-3:]):
-                        loop.set_postfix_str(f'Warning: Volume has shape {volume.shape} for {pid} series {sid}. Skipping...')
-                        broken_volumes.append((pid, sid[0]))
-                        continue 
-
-                    save_path = os.path.join(feature_dir, pid, f"{barcode}.{saveas}")
-                    if os.path.exists(save_path):
-                        loop.set_postfix_str(f'Features already extracted for {pid} series {sid}: {barcode}. Skipping...')
-                        continue
-                
-                    if processor is not None:
-                        volume = processor(volume)['pixel_values']
-
-                    volume = volume.to(device)
-                    output = model(volume)
-                    if isinstance(output, BaseModelOutputWithPooling):
-                        output = output.pooler_output
-
-                    if self.save_thumbnails:
-                        self.capture_slice(volume, f"{pid}_{barcode}")
-                
-                    # Save the features to disk 
-                    if saveas == 'h5':
-                        save_h5(save_path=save_path,
-                                assets = {
-                                    'features' : output.detach().cpu().numpy(),
-                                    'metadata': metadata
-                                },
-                                attributes = {
-                                    'features': {'pid': pid, 'series': sid, 'savetodir': feature_dir, 'encoder': fmname},
-                                },
-                                mode='w')
-                        loop.set_postfix_str(f'Features saved in h5 for {pid} series {sid}: {barcode}.')
-                    elif saveas == 'pt':
-                        torch.save(featureBlock, save_path)
-                        loop.set_postfix_str(f'Features saved in pt for {pid} series {sid}.')
-                    else:
-                        raise ValueError(f'Invalid save_features_as: {saveas}. Only "h5" and "pt" are supported.')
-
-            if len(broken_volumes) > 0:
-                print(f"Warning: {len(broken_volumes)} volumes were skipped due to invalid shapes. See below for details:")
-                for pid, studyid in broken_volumes:
-                    print(f" - Patient ID: {pid}, Series ID: {studyid}")
+    def run_3d_feature_extraction_default(self, model, fmname, processor, device, saveas="h5", save_strategy="volume"):
+        self._run_extraction(model, fmname, processor, device, saveas, "volume", save_strategy)
 
     def run_all(self, device, saveas: str = "h5"):
         """Load each configured encoder through the model_zoo adapter registry."""
         for model_name in self.fms:
             config_key = "renalclip" if model_name == "renal-clip" else model_name
             model_config = self.model_configs.get(model_name, self.model_configs.get(config_key, {}))
-            model, processor, mode = load_foundation_model(
+            model, processor = load_foundation_model(
                 model_name,
                 config=model_config,
                 device=device,
             )
 
-            if mode == "axial":
-                self.run_axial_feature_extraction_default(
-                    model, model_name, processor, device, saveas=saveas
-                )
-            elif mode == "3d":
-                self.run_3d_feature_extraction_default(
-                    model, model_name, processor, device, saveas=saveas
-                )
-            else:
+            extraction_strategy = model_config.get("extraction_strategy")
+            if extraction_strategy is None:
                 raise ValueError(
-                    f"Model adapter {model_name!r} returned unsupported mode {mode!r}"
+                    f"Model {model_name!r} has no extraction_strategy in model_configs.yaml"
                 )
+            save_strategy = model_config.get("save_strategy", extraction_strategy)
+            model_input_strategy = model_config.get("model_input_strategy", "volume")
+            self._run_extraction(
+                model,
+                model_name,
+                processor,
+                device,
+                saveas,
+                extraction_strategy,
+                save_strategy,
+                model_input_strategy,
+            )
 
             print(
                 f"Finished feature extraction for {model_name}. "

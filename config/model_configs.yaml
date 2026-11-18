@@ -1,0 +1,85 @@
+# Extraction settings are independent from model loading options.
+# extraction_strategy: axial | volume
+# save_strategy: axial | volume
+# model_input_strategy: volume | slice_batch
+
+curia:
+  model_id: raidium/curia
+  from_pretrained: {}
+  processor_from_pretrained:
+    trust_remote_code: true
+  extraction_strategy: axial
+  save_strategy: axial
+  model_input_strategy: volume
+
+curia-2:
+  model_id: raidium/curia-2
+  from_pretrained: {}
+  processor_from_pretrained:
+    trust_remote_code: true
+  extraction_strategy: axial
+  save_strategy: axial
+  model_input_strategy: volume
+
+tap-ct-2d:
+  model_id: fomofo/tap-ct-b-2d
+  from_pretrained:
+    trust_remote_code: true
+  processor_from_pretrained:
+    trust_remote_code: true
+  load_processor: true
+  extraction_strategy: volume
+  save_strategy: axial
+  model_input_strategy: slice_batch
+
+tap-ct-3d:
+  model_id: fomofo/tap-ct-b-3d
+  from_pretrained:
+    trust_remote_code: true
+  processor_from_pretrained:
+    trust_remote_code: true
+  load_processor: true
+  extraction_strategy: volume
+  save_strategy: volume
+  model_input_strategy: volume
+
+renalclip:
+  repo_path: /data/pathology/projects/filip/code/RenalCLIP
+  init_kwargs:
+    mode: finetune
+  extraction_strategy: volume
+  save_strategy: volume
+  model_input_strategy: volume
+
+renal-clip:
+  repo_path: /data/pathology/projects/filip/code/RenalCLIP
+  init_kwargs:
+    mode: finetune
+  extraction_strategy: volume
+  save_strategy: volume
+  model_input_strategy: volume
+
+merlin:
+  init_kwargs:
+    ImageEmbedding: true
+  extraction_strategy: volume
+  save_strategy: volume
+  model_input_strategy: volume
+
+nnfoundation-cnn:
+  modality: ct
+  extraction_strategy: volume
+  save_strategy: volume
+  model_input_strategy: volume
+
+nnfoundation-vit:
+  modality: ct
+  extraction_strategy: volume
+  save_strategy: volume
+  model_input_strategy: volume
+
+nnfoundation:
+  modality: ct
+  extraction_strategy: volume
+  save_strategy: volume
+  model_input_strategy: volume

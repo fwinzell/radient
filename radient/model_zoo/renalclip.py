@@ -29,4 +29,4 @@ def load_renalclip(config, device):
     model = RenalModel(**config.get("init_kwargs", {"mode": "finetune"}))
     model.to(device)
     model.eval()
-    return model, None, "3d"
+    return model, None

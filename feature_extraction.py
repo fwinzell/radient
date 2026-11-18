@@ -129,3 +129,21 @@ if __name__ == "__main__":
     config = get_config()
     login_to_huggingface(config.hf_token_path)
     main(config)   
+
+
+
+"""
+PROJECT_ROOT="/data/pathology/projects/filip/code"
+
+python3 "$PROJECT_ROOT/radient/feature_extraction.py" \
+  --worklist_csv "/data/pathology/projects/filip/cohorts/radient_worklists/tcga_kirc_with_segmentations.csv" \
+  --save_dir "/data/pathology/projects/filip/cohorts/tcga/features/radiology/tcga_kirc" \
+  --fm_list merlin \
+  --save_type h5 \
+  --hf_token_path "$PROJECT_ROOT/hf_token.txt" \
+  --dataset_config_file "$PROJECT_ROOT/radient/config/tcga_kidney.yaml" \
+  --segmentation_mode external \
+  --use_segmentations \
+   --dataset_config_file "$PROJECT_ROOT/radient/config/tcga_kidney.yaml"
+
+"""

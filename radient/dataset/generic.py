@@ -337,7 +337,9 @@ class GenericRadiologyDataset(Dataset):
             "pid": pid,
             "sid": sid,
             "barcode": barcode,
-            "image": img_np,
+            # A single sample is [C, D, H, W]. DataLoader batching then
+            # yields the standard [B, C, D, H, W] shape expected by 3D models.
+            "image": img_np[None, ...],
             "ct": img_np,  # Backward compatibility for existing CT feature pipelines. Remove in future versions.
             "seg": seg,
             "metadata": metadata,

@@ -148,7 +148,7 @@ class nnFoundationViT(nn.Module):
 
 
 def load_nnfoundation_cnn(config=None, device=None):
-    """Load nnFoundationCNN and return ``(model, preprocessor, '3d')``."""
+    """Load nnFoundationCNN and return ``(model, preprocessor)``."""
     from dynamic_network_architectures.architectures.unet import ResidualEncoderUNet
     from huggingface_hub import hf_hub_download
 
@@ -176,11 +176,11 @@ def load_nnfoundation_cnn(config=None, device=None):
     encoder = network.encoder
     encoder.return_skips = True
     model = nnFoundationCNN(encoder).to(device or _default_device()).eval()
-    return model, _select_preprocessor(config or {}), "3d"
+    return model, _select_preprocessor(config or {})
 
 
 def load_nnfoundation_vit(config=None, device=None):
-    """Load nnFoundationViT and return ``(model, preprocessor, '3d')``."""
+    """Load nnFoundationViT and return ``(model, preprocessor)``."""
     from dynamic_network_architectures.architectures.primus import Primus
     from huggingface_hub import hf_hub_download
 
@@ -201,7 +201,7 @@ def load_nnfoundation_vit(config=None, device=None):
 
     model = nnFoundationViT(network.down_projection, network.eva)
     model = model.to(device or _default_device()).eval()
-    return model, _select_preprocessor(config or {}), "3d"
+    return model, _select_preprocessor(config or {})
 
 
 # Registry adapter retained for the common model-zoo interface. All loader
@@ -222,8 +222,8 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    cnn, _, _ = load_nnfoundation_cnn()
-    vit, _, _ = load_nnfoundation_vit()
+    cnn, _ = load_nnfoundation_cnn()
+    vit, _ = load_nnfoundation_vit()
 
     input = torch.rand(1, 1, 192, 192, 192).to(_default_device())
     with torch.no_grad():

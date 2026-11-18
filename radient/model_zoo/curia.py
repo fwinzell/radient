@@ -11,7 +11,7 @@ def _load(model_id, config, device):
     processor = AutoImageProcessor.from_pretrained(model_id, **processor_options)
     model.to(device)
     model.eval()
-    return model, processor, "axial"
+    return model, processor
 
 
 def load_curia(config, device):

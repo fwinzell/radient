@@ -21,11 +21,10 @@ def available_models():
 
 
 def load_foundation_model(name, config=None, device="cpu"):
-    """Return ``(model, processor, mode)`` for a registered model.
+    """Return ``(model, processor)`` for a registered model.
 
-    ``mode`` is ``"axial"`` for 2D slice encoders and ``"3d"`` for
-    volume encoders. Model-specific options are passed to the adapter in
-    ``config``.
+    Model-specific loading options are passed to the adapter in ``config``.
+    Extraction behavior is configured separately in ``model_configs.yaml``.
     """
     try:
         module_name, function_name = _LOADERS[name.lower()]
