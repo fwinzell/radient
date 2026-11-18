@@ -2,6 +2,8 @@
 
 `RadiologyProcessor` extracts features from radiology volumes listed in a CSV worklist. The first column contains a volume path for each row. Paths can point to a supported image file or, when DICOM series loading is enabled in the dataset, a series directory.
 
+![radient](radient.png)
+
 ## Worklist with segmentations
 
 Choose a segmentation mode with `--segmentation_mode`:
