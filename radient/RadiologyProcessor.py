@@ -14,7 +14,11 @@ from torch.utils.data import DataLoader
 
 from radient.utils import save_h5
 from radient.dataset.generic import GenericRadiologyDataset
-from radient.dataset.features import FeatureExtractionDataset
+from radient.dataset.features import (
+    FeatureExtractionDataset,
+    KidneyFeatureDataset,
+    kidney_collate_fn,
+)
 from radient.model_zoo import load_foundation_model
 
 class RadiologyProcessor:
@@ -189,13 +193,7 @@ class RadiologyProcessor:
                     f"use_segmentations=True; missing paths on CSV rows {rows[:10]}"
                 )
 
-        if dataset_class is not None:
-            self.dataset = dataset_class(file_obj=self.file_obj, **dataset_config)
-            selected_collate_fn = collate_fn
-        else:
-            # The generic loader already supports missing or unreadable masks;
-            # set this explicitly so allow_missing_segmentations controls both blank
-            # paths and paths that do not exist (or cannot be aligned).
+        if dataset_class is None:
             if segmentation_mode == "external":
                 dataset_config["allow_missing_segmentations"] = self.allow_missing_segmentations
             else:
@@ -207,14 +205,69 @@ class RadiologyProcessor:
                 dataset_config["totalsegmentator_fast"] = totalsegmentator_fast
             if segmentation_mode == "none":
                 dataset_config.setdefault("fallback_mode", "whole_volume")
-            self.dataset = FeatureExtractionDataset(file_obj=self.file_obj, **dataset_config)
-            selected_collate_fn = self._feature_collate
+
+        self.dataset_config = dataset_config
+        self.dataset_class = dataset_class
+        self.custom_collate_fn = collate_fn
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.dataset = None
+        self.dataloader = None
+        self._active_processor = None
+        self._configure_dataset(preprocessor=None, modality=dataset_config.get("modality", "ct"))
+
+    def _configure_dataset(
+        self,
+        preprocessor,
+        modality,
+        preprocessor_strategy="volume",
+        dataset_overrides=None,
+    ):
+        """Build a fresh dataset/loader for the selected model."""
+        modality = str(modality).lower()
+        if modality not in {"ct", "mri"}:
+            raise ValueError("modality must be 'ct' or 'mri'")
+
+        dataset_options = {**self.dataset_config, **(dataset_overrides or {})}
+        dataset_options.pop("modality", None)
+        dataset_type = dataset_options.pop("dataset_type", "volume")
+        kidney_dataset = dataset_type == "kidney" or self.dataset_class is KidneyFeatureDataset
+        if self.dataset_class is not None and not kidney_dataset:
+            self.dataset = self.dataset_class(
+                file_obj=self.file_obj,
+                **dataset_options,
+            )
+            collate_fn = self.custom_collate_fn
+            self._active_processor = preprocessor
+        elif kidney_dataset:
+            self.dataset = KidneyFeatureDataset(
+                file_obj=self.file_obj,
+                modality=modality,
+                preprocessor=preprocessor,
+                preprocessor_strategy=preprocessor_strategy,
+                **dataset_options,
+            )
+            collate_fn = kidney_collate_fn
+            self._active_processor = None
+        elif dataset_type == "volume":
+            self.dataset = FeatureExtractionDataset(
+                file_obj=self.file_obj,
+                modality=modality,
+                preprocessor=preprocessor,
+                preprocessor_strategy=preprocessor_strategy,
+                **dataset_options,
+            )
+            collate_fn = self._feature_collate
+            self._active_processor = None
+        else:
+            raise ValueError("dataset_type must be 'volume' or 'kidney'")
+
         self.dataloader = DataLoader(
             self.dataset,
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             shuffle=False,
-            num_workers=num_workers,
-            collate_fn=selected_collate_fn,
+            num_workers=self.num_workers,
+            collate_fn=collate_fn,
         )
 
     @staticmethod
@@ -371,6 +424,69 @@ class RadiologyProcessor:
     def _save_volume_features(self, features, depth, save_path, saveas, metadata, pid, sid, fmname, feature_dir):
         self._write_features(features, save_path, saveas, metadata, pid, sid, fmname, feature_dir)
 
+    def _run_kidney_extraction(
+        self,
+        model,
+        fmname,
+        processor,
+        device,
+        saveas,
+        extraction_strategy,
+        save_strategy,
+        model_input_strategy,
+        feature_dir,
+    ):
+        saver = self._save_axial_features if save_strategy == "axial" else self._save_volume_features
+        with torch.no_grad():
+            loop = tqdm(self.dataloader)
+            for batch in loop:
+                for index, pid in enumerate(batch["pid"]):
+                    sid = batch["sid"][index]
+                    barcode = batch["barcode"][index]
+                    metadata = batch.get("metadata", [None] * len(batch["pid"]))[index]
+
+                    for side in ("left", "right"):
+                        volume = batch[side][index]
+                        if volume is None:
+                            continue
+                        if volume.ndim not in (3, 4) or any(size == 0 for size in volume.shape[-3:]):
+                            loop.set_postfix_str(
+                                f"Skipping invalid {side} kidney crop {tuple(volume.shape)} for {pid}"
+                            )
+                            continue
+
+                        save_path = os.path.join(
+                            feature_dir, str(pid), f"{barcode}_{side}.{saveas}"
+                        )
+                        if os.path.exists(save_path):
+                            loop.set_postfix_str(
+                                f"Features already extracted for {pid} {side} kidney"
+                            )
+                            continue
+
+                        side_metadata = dict(metadata or {})
+                        side_metadata["kidney_side"] = side
+                        preprocessing = side_metadata.get(f"{side}_preprocessing") or {}
+                        input_shape = preprocessing.get("input_shape_zyx")
+                        depth = input_shape[0] if input_shape else volume.shape[-3]
+                        if extraction_strategy == "axial":
+                            features = self._extract_axial_features(
+                                volume, model, processor, device
+                            )
+                        else:
+                            features = self._extract_volume_features(
+                                volume, model, processor, device, model_input_strategy
+                            )
+                        if self.save_thumbnails:
+                            self.capture_slice(volume, f"{pid}_{barcode}_{side}")
+                        saver(
+                            features, depth, save_path, saveas, side_metadata,
+                            pid, sid, fmname, feature_dir,
+                        )
+                        loop.set_postfix_str(
+                            f"Saved {side} kidney features for {pid} series {sid}"
+                        )
+
     def _run_extraction(
         self,
         model,
@@ -394,6 +510,19 @@ class RadiologyProcessor:
             f"{'axial' if save_strategy == 'axial' else '3d'}_features_{fmname}",
         )
         os.makedirs(feature_dir, exist_ok=True)
+        if isinstance(self.dataset, KidneyFeatureDataset):
+            self._run_kidney_extraction(
+                model,
+                fmname,
+                processor,
+                device,
+                saveas,
+                extraction_strategy,
+                save_strategy,
+                model_input_strategy,
+                feature_dir,
+            )
+            return
         broken_volumes = []
 
         with torch.no_grad():
@@ -416,7 +545,16 @@ class RadiologyProcessor:
                         loop.set_postfix_str(f"Features already extracted for {pid} series {sid}: {barcode}")
                         continue
 
-                    depth = volume.shape[-3]
+                    processor_input_shape = (
+                        metadata.get("processor_input_shape")
+                        if isinstance(metadata, dict)
+                        else None
+                    )
+                    depth = (
+                        processor_input_shape[-3]
+                        if processor_input_shape is not None
+                        else volume.shape[-3]
+                    )
                     if extraction_strategy == "axial":
                         features = self._extract_axial_features(volume, model, processor, device)
                     else:
@@ -447,13 +585,26 @@ class RadiologyProcessor:
         for model_name in self.fms:
             config_key = "renalclip" if model_name == "renal-clip" else model_name
             model_config = self.model_configs.get(model_name, self.model_configs.get(config_key, {}))
+            dataset_overrides = model_config.get("dataset", {})
+            modality = model_config.get(
+                "modality",
+                dataset_overrides.get("modality", self.dataset_config.get("modality", "ct")),
+            )
+            model_config = {**model_config, "modality": modality}
+            extraction_strategy = model_config.get("extraction_strategy")
             model, processor = load_foundation_model(
                 model_name,
                 config=model_config,
                 device=device,
             )
+            self._configure_dataset(
+                preprocessor=processor,
+                modality=modality,
+                preprocessor_strategy=extraction_strategy or "volume",
+                dataset_overrides=dataset_overrides,
+            )
+            active_processor = self._active_processor
 
-            extraction_strategy = model_config.get("extraction_strategy")
             if extraction_strategy is None:
                 raise ValueError(
                     f"Model {model_name!r} has no extraction_strategy in model_configs.yaml"
@@ -463,7 +614,7 @@ class RadiologyProcessor:
             self._run_extraction(
                 model,
                 model_name,
-                processor,
+                active_processor,
                 device,
                 saveas,
                 extraction_strategy,

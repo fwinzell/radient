@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --qos=high
+#SBATCH --qos=low
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=4
@@ -8,16 +8,15 @@
 #SBATCH --no-container-entrypoint
 #SBATCH --output=/home/%u/logs/slurm-%j.out \
 #SBATCH --container-mounts=/data/pathology/projects/:/data/pathology/projects/,/data/pa_cpgarchive/:/data/pa_cpgarchive/,/data/oncology/:/data/oncology/
-#SBATCH --container-image="dockerdex.umcn.nl:5005#fwinzell/ct_fms:latest"
-##SBATCH --container-image="dockerdex.umcn.nl:5005#fwinzell/radient:latest"
+##SBATCH --container-image="dockerdex.umcn.nl:5005#fwinzell/ct_fms:latest"
+#SBATCH --container-image="dockerdex.umcn.nl:5005#fwinzell/radient:latest"
 
-pip3 install tensorboard
+#pip3 install tensorboard
 
 PROJECT_USER="filip"
 PROJECT_ROOT="/data/pathology/projects/filip/code/"
 
-pip3 install -r "$PROJECT_ROOT/radient/requirements.txt"
-
+#pip3 install -r "$PROJECT_ROOT/radient/requirements.txt"
 
 SCRIPT_PATH="$PROJECT_ROOT"/radient/feature_extraction.py
 IMG_DIR="/data/oncology/experiments/sarah_kidney_abnormality_segmentation/datasets/TCGA-KIRC/"
@@ -74,13 +73,14 @@ if [ -d "$PERSISTENT_CACHE_DIR/torch" ] && [ "$(ls -A $PERSISTENT_CACHE_DIR/torc
 fi
 
 # Currently supports: curia, tap-ct-2d, tap-ct-3d, merlin, nnfoundation-cnn, nnfoundation-vit and renalclip
+all_fms=(merlin nnfoundation-vit renalclip curia-2 tap-ct-2d tap-ct-3d nnfoundation-cnn curia)
 python3 "$SCRIPT_PATH" \
     --img_dir "$IMG_DIR" \
     --use_segmentations \
     --segmentation_mode "external" \
     --save_dir "$SAVE_DIR" \
     --worklist_csv "$WORKLIST_PATH" \
-    --fm_list nnfoundation-vit \
+    --fm_list "${all_fms}" \
     --save_type h5 \
     --hf_token_path "$PROJECT_ROOT/hf_token.txt" \
     --dataset_config_file "$PROJECT_ROOT/radient/config/tcga_kidney.yaml"

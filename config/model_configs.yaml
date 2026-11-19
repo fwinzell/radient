@@ -60,6 +60,7 @@ renal-clip:
   model_input_strategy: volume
 
 merlin:
+  modality: ct
   init_kwargs:
     ImageEmbedding: true
   extraction_strategy: volume
@@ -67,19 +68,16 @@ merlin:
   model_input_strategy: volume
 
 nnfoundation-cnn:
-  modality: ct
   extraction_strategy: volume
   save_strategy: volume
   model_input_strategy: volume
 
 nnfoundation-vit:
-  modality: ct
   extraction_strategy: volume
   save_strategy: volume
   model_input_strategy: volume
 
 nnfoundation:
-  modality: ct
   extraction_strategy: volume
   save_strategy: volume
   model_input_strategy: volume

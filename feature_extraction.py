@@ -11,7 +11,9 @@ import yaml
 
 class DatasetConfig(BaseModel):
 
-    orientation: str = "LPS"
+    orientation: str = "RAS"
+    modality: str = "ct"
+    dataset_type: str = "volume"
     spatial_size: int = 512
 
     rel_pid_idx: int = 0
@@ -21,21 +23,17 @@ class DatasetConfig(BaseModel):
 
     crop_size_mm: tuple[float, float, float] = (140.0, 140.0,160.0)
     target_size: tuple[int, int, int] = (32,128,128)
+    target_spacing_xyz: Optional[tuple[float, float, float]] = None
     
-    pad_value: float = -1000.0
+    pad_value: Optional[float] = None
     fallback_mode: str = "center_crop"
-    intensity_mode: str = "ct_window"
-    
-    # HU normalization
-    window_level: Optional[float] = 50.0
-    window_width: Optional[float] = 500.0
     
     # Segmentation labels
-    kidney_label: int = 1
+    organ_label: int = 1
     lesion_label: int = 2
     
     # Minimum kidney component size in voxels
-    min_kidney_voxels: int = 1000
+    min_organ_voxels: int = 1000
     return_metadata: bool = True
 
     @classmethod

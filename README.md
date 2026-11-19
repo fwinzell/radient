@@ -44,3 +44,12 @@ python feature_extraction.py \
 To compute kidney ROIs automatically, install TotalSegmentator and run with `--segmentation_mode totalsegmentator`. The default ROIs are `kidney_left` and `kidney_right`; choose others with `--totalsegmentator_rois ROI_NAME ...`, and optionally set `--totalsegmentator_task` or `--totalsegmentator_fast`.
 
 Use `--dataset_config_file` for dataset settings and `--model_config_file` for model-specific settings. `--save_type` selects HDF5 (`h5`, default) or PyTorch (`pt`) output.
+
+For kidney-centered feature extraction, set `dataset_type: kidney` in the
+dataset YAML and use `--segmentation_mode external` with the matching
+segmentation paths in the worklist. The dataset keeps its segmentation-based
+left/right selection, while `crop_size_mm`, `target_spacing_xyz`, and
+`target_size` control the physical crop and model patch. These can also be
+overridden per model under that model's `dataset` section in
+`config/model_configs.yaml`. Model adapters can provide a kidney-crop
+preprocessor; the left and right feature outputs are saved as separate files.

@@ -96,12 +96,45 @@ def preprocess_nnfoundation_mri(volume: torch.Tensor) -> dict[str, torch.Tensor]
     return _preprocess_nnfoundation_volume(volume)
 
 
+class NNFoundationPreprocessor:
+    """nnFoundation transform usable by both datasets and direct callers."""
+
+    def __init__(self, modality: str):
+        self.modality = modality
+
+    def __call__(self, volume: torch.Tensor) -> dict[str, torch.Tensor]:
+        return _preprocess_nnfoundation_volume(volume)
+
+    def preprocess_dataset(self, volume, metadata, modality):
+        return self._preprocess_crop(volume, modality)
+
+    def preprocess_kidney_crop(self, volume, spacing_xyz, metadata, modality, side):
+        return self._preprocess_crop(volume, modality)
+
+    def _preprocess_crop(self, volume, modality):
+        if modality != self.modality:
+            raise ValueError(
+                f"nnFoundation preprocessor is configured for {self.modality}, "
+                f"but dataset modality is {modality}"
+            )
+        tensor = torch.as_tensor(volume, dtype=torch.float32).unsqueeze(0)
+        return {
+            "image": self(tensor)["pixel_values"][0],
+            "metadata": {
+                "intensity_transform": "per_case_zscore",
+                "spatial_transform": "crop_nonzero_then_center_crop_or_pad_192_cube",
+                "intensity_scale": "zscore",
+                "pad_value": 0.0,
+            },
+        }
+
+
 def _select_preprocessor(config: dict):
     modality = str(config.get("modality", "mri")).lower()
     if modality == "ct":
-        return preprocess_nnfoundation_ct
+        return NNFoundationPreprocessor("ct")
     if modality in {"mri", "mr"}:
-        return preprocess_nnfoundation_mri
+        return NNFoundationPreprocessor("mri")
     raise ValueError("nnFoundation modality must be 'ct' or 'mri'")
 
 
