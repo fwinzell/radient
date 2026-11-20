@@ -436,7 +436,6 @@ class RadiologyProcessor:
         model_input_strategy,
         feature_dir,
     ):
-        saver = self._save_axial_features if save_strategy == "axial" else self._save_volume_features
         with torch.no_grad():
             loop = tqdm(self.dataloader)
             for batch in loop:
@@ -444,6 +443,14 @@ class RadiologyProcessor:
                     sid = batch["sid"][index]
                     barcode = batch["barcode"][index]
                     metadata = batch.get("metadata", [None] * len(batch["pid"]))[index]
+
+                    save_path = os.path.join(feature_dir, str(pid), f"{barcode}.{saveas}")
+                    if os.path.exists(save_path):
+                        loop.set_postfix_str(f"Features already extracted for {pid} series {sid}: {barcode}")
+                        continue
+
+                    side_features = {}
+                    feature_attrs = {}
 
                     for side in ("left", "right"):
                         volume = batch[side][index]
@@ -455,37 +462,55 @@ class RadiologyProcessor:
                             )
                             continue
 
-                        save_path = os.path.join(
-                            feature_dir, str(pid), f"{barcode}_{side}.{saveas}"
-                        )
-                        if os.path.exists(save_path):
-                            loop.set_postfix_str(
-                                f"Features already extracted for {pid} {side} kidney"
-                            )
-                            continue
-
                         side_metadata = dict(metadata or {})
                         side_metadata["kidney_side"] = side
                         preprocessing = side_metadata.get(f"{side}_preprocessing") or {}
                         input_shape = preprocessing.get("input_shape_zyx")
                         depth = input_shape[0] if input_shape else volume.shape[-3]
                         if extraction_strategy == "axial":
-                            features = self._extract_axial_features(
+                            output_features = self._extract_axial_features(
                                 volume, model, processor, device
                             )
                         else:
-                            features = self._extract_volume_features(
+                            output_features = self._extract_volume_features(
                                 volume, model, processor, device, model_input_strategy
                             )
+                        if save_strategy == "axial":
+                            output_features = self._axial_layout(output_features, depth)
                         if self.save_thumbnails:
                             self.capture_slice(volume, f"{pid}_{barcode}_{side}")
-                        saver(
-                            features, depth, save_path, saveas, side_metadata,
-                            pid, sid, fmname, feature_dir,
+                        side_features[side] = output_features.detach().cpu().numpy()
+                        feature_attrs[side] = {
+                            "kidney_side": side,
+                            "center_xyz": side_metadata.get(f"{side}_center_xyz"),
+                            "volume_voxels": side_metadata.get(f"{side}_volume_voxels"),
+                            "lesion_voxels": side_metadata.get(f"{side}_lesion_voxels"),
+                        }
+
+                    if not side_features:
+                        continue
+
+                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                    if saveas == "h5":
+                        save_h5(
+                            save_path=save_path,
+                            assets={"features": side_features},
+                            attributes={"features": feature_attrs},
+                            root_attributes={
+                                "pid": pid,
+                                "sid": sid,
+                                "barcode": barcode,
+                                "savetodir": feature_dir,
+                                "encoder": fmname,
+                                "mode": "axial" if save_strategy == "axial" else "volume",
+                            },
+                            mode="w",
                         )
-                        loop.set_postfix_str(
-                            f"Saved {side} kidney features for {pid} series {sid}"
-                        )
+                    elif saveas == "pt":
+                        torch.save({side: torch.as_tensor(value) for side, value in side_features.items()}, save_path)
+                    else:
+                        raise ValueError(f"Invalid save format {saveas!r}; expected 'h5' or 'pt'.")
+                    loop.set_postfix_str(f"Saved kidney features for {pid} series {sid}: {barcode}")
 
     def _run_extraction(
         self,

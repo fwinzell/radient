@@ -4,6 +4,20 @@
 
 `RadiologyProcessor` extracts features from radiology volumes listed in a CSV worklist. The first column contains a volume path for each row. Paths can point to a supported image file or, when DICOM series loading is enabled in the dataset, a series directory.
 
+## Get started
+
+`create_worklist.py` can be used to create a worklist for your dataset. If you have external segmentations, `scripts/match_segmentations` can be used to update the worklist with those. See these scripts for details on how to run them. 
+
+After creating a worklist, update `radient.sh` with the correct paths and run the job to start the feature extraction. You can edit the foundation models used in the argument to `feature_extraction.py`. You may also add new foundation models to model_zoo if you want to try them. Current support:
+- curia
+- curia-2
+- merlin
+- nnfoundation-cnn
+- nnfoundation-vit
+- tap-ct-3d
+- tap-ct-2d
+- renalclip
+
 ## Worklist with segmentations
 
 Choose a segmentation mode with `--segmentation_mode`:
@@ -52,4 +66,6 @@ left/right selection, while `crop_size_mm`, `target_spacing_xyz`, and
 `target_size` control the physical crop and model patch. These can also be
 overridden per model under that model's `dataset` section in
 `config/model_configs.yaml`. Model adapters can provide a kidney-crop
-preprocessor; the left and right feature outputs are saved as separate files.
+preprocessor; available left and right features are stored in one file per
+volume under the `features/left` and `features/right` HDF5 groups (or as
+side-keyed entries in a PyTorch file).

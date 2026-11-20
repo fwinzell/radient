@@ -193,3 +193,12 @@ Examples:
 
 if __name__ == "__main__":
     main()
+
+
+
+"""
+Example:
+    python3 create_worklist.py /data/pathology/projects/multimodal_baseline/kidney/datasets/TCGA-KIRC/radiology/TCGA-KIRC-mha \
+          /data/pathology/projects/filip/cohorts/radient_worklists/tcga_kirc_updated.csv
+
+"""
